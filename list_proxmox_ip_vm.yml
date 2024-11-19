@@ -71,6 +71,6 @@
 
     - name: Save IPs to a local JSON file
       copy:
-        dest: ./vms.json
+        dest: ./proxmox_ip_vms.json
         content: "{{ vm_ips_list | to_nice_json }}"
       delegate_to: localhost
