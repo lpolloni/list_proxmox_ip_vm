@@ -1,0 +1,76 @@
+---
+- name: List running VMs on Proxmox and their IPs
+  hosts: proxmox
+  gather_facts: no
+  vars:
+    api_user: "root@pam"
+    api_password: "your_password"
+    api_host: "192.168.1.50"
+
+  tasks:
+    - name: Get authentication ticket
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/access/ticket"
+        method: POST
+        body:
+          username: "{{ api_user }}"
+          password: "{{ api_password }}"
+        body_format: json
+        return_content: yes
+        validate_certs: no
+      register: auth
+
+    - name: List all VMs
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/cluster/resources?type=vm"
+        method: GET
+        headers:
+          Cookie: "PVEAuthCookie={{ auth.json.data.ticket }}"
+          CSRFPreventionToken: "{{ auth.json.data.CSRFPreventionToken }}"
+        return_content: yes
+        validate_certs: no
+      register: vms
+
+    - name: Filter running VMs
+      set_fact:
+        running_vms: >-
+          {{
+            vms.json.data | selectattr('status', 'equalto', 'running') | list
+          }}
+
+    - name: Show running VMs
+      debug:
+        var: running_vms
+
+    - name: Get IPs of running VMs
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/nodes/{{ item.node }}/qemu/{{ item.vmid }}/agent/network-get-interfaces"
+        method: GET
+        headers:
+          Cookie: "PVEAuthCookie={{ auth.json.data.ticket }}"
+          CSRFPreventionToken: "{{ auth.json.data.CSRFPreventionToken }}"
+        return_content: yes
+        validate_certs: no
+      loop: "{{ running_vms }}"
+      register: vm_ips
+      ignore_errors: yes
+
+    - name: Show IPs
+      debug:
+        var: vm_ips
+
+    - name: Initialize the IPs list
+      set_fact:
+        vm_ips_list: []
+
+    - name: Save VMs IPs to a list
+      set_fact:
+        vm_ips_list: "{{ vm_ips_list + [{'vm_name': item.name, 'vm_id': item.vmid, 'ip_address': (vm_ips.results | selectattr('item.vmid', 'equalto', item.vmid) | map(attribute='json.data.result') | first | map(attribute='ip-addresses') | flatten | selectattr('ip-address', 'search', '^192') | map(attribute='ip-address') | first) }] }}"
+      when: vm_ips.results | selectattr('json.data.result', 'defined') | length > 0
+      loop: "{{ running_vms }}"
+
+    - name: Save IPs to a local JSON file
+      copy:
+        dest: ./vms.json
+        content: "{{ vm_ips_list | to_nice_json }}"
+      delegate_to: localhost
